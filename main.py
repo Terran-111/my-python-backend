@@ -24,21 +24,16 @@ def read_root():
 @app.get("/cat")
 def get_cat():
     print("收到 Vue 的请求了！正在去帮它找猫...")
-    # 1. 设置代理 (假设你的梯子端口是 7890)
-    # 如果你的端口不是 7890，记得改这里！
-    my_proxies = {
-        "http": "http://127.0.0.1:7890",
-        "https": "http://127.0.0.1:7890",
-    }
+
     try:
-        # 2. 发送请求时，带上 proxies 参数
+        # 发送请求时，带上 proxies 参数
         # timeout=10 意思是如果 10 秒还没连上，就放弃，别死等
-        response = requests.get("https://cataas.com/cat?json=true",proxies=my_proxies,timeout=10)
+        response = requests.get("https://cataas.com/cat?json=true",timeout=10)
         data=response.json()
         real_url=data["url"]
         return {
         "image":real_url,
-        "note":"这是由Python后端代理获取的新猫猫"
+        "note":"这是由Python后端代理获取的新猫猫（Vercel直连版）"
         }
     except Exception as e:
         print("抓猫失败:", e)

@@ -9,7 +9,7 @@ from PIL import Image  # 图片处理工具
 from pydantic import BaseModel # 用来定义接收的数据格式
 import os
 from openai import OpenAI
-
+from fastapi.responses import StreamingResponse # 引入流式响应
 
 # 1. 创建一个 App 实例
 app = FastAPI()
@@ -44,27 +44,31 @@ def chat_with_ai(req: ChatRequest):
         return {
             "reply": "错误：后端没有配置API KEY，请在 Vercel 环境变量里添加 SILICON_KEY"
         }
-    try:
-        client=OpenAI(
-            api_key=api_key,
-            base_url="https://api.siliconflow.cn/v1"
-        )
-        
-        response = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-V3",
-            messages=[
-                {"role":"system","content":"你是一个幽默风趣的猫咪助手，说话喜欢带'喵'。"},
-                {"role":"user","content":req.message}
-            ],
-            temperature=0.7,
-        )
-        
-        ai_reply=response.choices[0].message.content
-        return {"reply": ai_reply}
-    
-    except Exception as e:
-        print("AI调用失败:", e)
-        return {"reply": f"AI 累了，暂时无法回答喵... (错误: {str(e)})"}
+    def generate():
+        try:
+            client = OpenAI(
+                api_key=api_key,
+                base_url="https://api.siliconflow.cn/v1"
+            )
+
+            # 开启 stream=True
+            response = client.chat.completions.create(
+                model="deepseek-ai/DeepSeek-V3",
+                messages=[
+                    {"role": "system", "content": "你是一个风趣的猫娘助手，说话结尾喜欢带'喵'。"},
+                    {"role": "user", "content": req.message}
+                ],
+                temperature=0.7,
+                stream=True # 关键开关
+            )
+            for chunk in response:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                
+        except Exception as e:
+           yield f'出错啦喵：{str(e)}'
+           
+    return StreamingResponse(generate(), media_type="text/plain")
 
 # --- 原有的抓猫接口保持不变 ---
 @app.get("/cat")

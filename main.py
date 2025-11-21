@@ -39,36 +39,36 @@ class ChatRequest(BaseModel):
 
 # --- 新增AI聊天接口 ---
 @app.post("/chat")
-def chat_with_ai(req: ChatRequest):
-    if not api_key:
-        return {
-            "reply": "错误：后端没有配置API KEY，请在 Vercel 环境变量里添加 SILICON_KEY"
-        }
-    def generate():
-        try:
-            client = OpenAI(
-                api_key=api_key,
-                base_url="https://api.siliconflow.cn/v1"
-            )
+async def chat_with_ai(req: ChatRequest):
+        if not api_key:
+            return {
+                "reply": "错误：后端没有配置API KEY，请在 Vercel 环境变量里添加 SILICON_KEY"
+            }
+        async def generate():
+                try:
+                    client = OpenAI(
+                        api_key=api_key,
+                        base_url="https://api.siliconflow.cn/v1"
+                    )
 
-            # 开启 stream=True
-            response = client.chat.completions.create(
-                model="deepseek-ai/DeepSeek-V3",
-                messages=[
-                    {"role": "system", "content": "你是一个风趣的猫娘助手，说话结尾喜欢带'喵'。"},
-                    {"role": "user", "content": req.message}
-                ],
-                temperature=0.7,
-                stream=True # 关键开关
-            )
-            for chunk in response:
-                if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+                    # 开启 stream=True
+                    response = client.chat.completions.create(
+                        model="deepseek-ai/DeepSeek-V3",
+                        messages=[
+                            {"role": "system", "content": "你是一个风趣的猫娘助手，说话结尾喜欢带'喵'。"},
+                            {"role": "user", "content": req.message}
+                        ],
+                        temperature=0.7,
+                        stream=True # 关键开关
+                    )
+                    for chunk in response:
+                        if chunk.choices[0].delta.content:
+                            yield chunk.choices[0].delta.content
+                        
+                except Exception as e:
+                    yield f'出错了喵：{str(e)}'
                 
-        except Exception as e:
-           yield f'出错啦喵：{str(e)}'
-           
-    return StreamingResponse(generate(), media_type="text/plain")
+        return StreamingResponse(generate(), media_type="text/plain")
 
 # --- 原有的抓猫接口保持不变 ---
 @app.get("/cat")

@@ -2,6 +2,10 @@ from fastapi import FastAPI
 import uvicorn
 import requests 
 
+import base64
+from io import BytesIO # 内存处理工具
+from PIL import Image  # 图片处理工具
+
 # 1. 创建一个 App 实例
 app = FastAPI()
 
@@ -28,12 +32,37 @@ def get_cat():
     try:
         # 发送请求时，带上 proxies 参数
         # timeout=10 意思是如果 10 秒还没连上，就放弃，别死等
-        response = requests.get("https://cataas.com/cat?json=true",timeout=10)
-        data=response.json()
-        real_url=data["url"]
+        # 1.下载原图
+        meta_response = requests.get("https://cataas.com/cat?json=true",timeout=10)
+        meta_response.raise_for_status() # 如果请求有错误，抛出异常  
+        data=meta_response.json()
+        
+        img_url=data["url"]
+        
+        # 2. 【关键】Python 亲自把图片下载到内存里
+        img_response = requests.get(img_url,timeout=10)
+        
+        # 3. 【核心优化】使用 Pillow 进行压缩
+        # 打开图片
+        image = Image.open(BytesIO(img_response.content))
+        
+        # A. 缩小尺寸：手机看图不需要太大，限制最大宽/高为 600px
+        image.thumbnail((600, 600))
+        
+        # B. 格式统一：转为 JPEG (体积比 PNG 小很多)
+        if image.mode in ("RGBA", "P"):
+            image = image.convert("RGB")
+            
+        # C. 降低质量：quality=60 (肉眼看不出区别，体积减半)
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=60)
+        
+        # 4. 转 Base64 字符串
+        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
         return {
-        "image":real_url,
-        "note":"这是由Python后端代理获取的新猫猫（Vercel直连版）"
+        "image":f"data:image/jpeg;base64,{img_str}",
+        "note":"这是由Python后端代理获取的新猫猫（Vercel直连压缩版）"
         }
     except Exception as e:
         print("抓猫失败:", e)

@@ -6,6 +6,11 @@ import base64
 from io import BytesIO # 内存处理工具
 from PIL import Image  # 图片处理工具
 
+from pydantic import BaseModel # 用来定义接收的数据格式
+import os
+from openai import OpenAI
+
+
 # 1. 创建一个 App 实例
 app = FastAPI()
 
@@ -22,9 +27,46 @@ app.add_middleware( #  为FastAPI应用添加CORS中间件配置
 # 当别人访问根目录 "/" 时，执行下面的函数
 @app.get("/")
 def read_root():
-    return {"message": "Python后端正在运行中！"}
+    return {"message": "Python后端(AI版)正在运行中！"}
 
-# 3. 定义另一个接口：/cat
+# --- 初始化 AI 客户端 ---
+# 从环境变量里读取 Key，如果在本地运行没有 Key，就设为 None
+api_key = os.getenv("SILICON_KEY", None)
+
+# 定义一个请求体结构，前端发来的数据必须包含 message
+class ChatRequest(BaseModel):
+    message:str
+
+# --- 新增AI聊天接口 ---
+@app.post("/chat")
+def chat_with_ai(req: ChatRequest):
+    if not api_key:
+        return {
+            "reply": "错误：后端没有配置API KEY，请在 Vercel 环境变量里添加 SILICON_KEY"
+        }
+    try:
+        client=OpenAI(
+            api_key=api_key,
+            base_url="https://api.siliconflow.cn/v1"
+        )
+        
+        response = client.chat.completions.create(
+            model="deepseek-ai/DeepSeek-V3",
+            messages=[
+                {"role":"system","content":"你是一个幽默风趣的猫咪助手，说话喜欢带'喵'。"},
+                {"role":"user","content":req.message}
+            ],
+            temperature=0.7,
+        )
+        
+        ai_reply=response.choices[0].message.content
+        return {"reply": ai_reply}
+    
+    except Exception as e:
+        print("AI调用失败:", e)
+        return {"reply": f"AI 累了，暂时无法回答喵... (错误: {str(e)})"}
+
+# --- 原有的抓猫接口保持不变 ---
 @app.get("/cat")
 def get_cat():
     print("收到 Vue 的请求了！正在去帮它找猫...")
@@ -34,7 +76,7 @@ def get_cat():
         # timeout=10 意思是如果 10 秒还没连上，就放弃，别死等
         # 1.下载原图
         meta_response = requests.get("https://cataas.com/cat?json=true",timeout=10)
-        meta_response.raise_for_status() # 如果请求有错误，抛出异常  
+        meta_response.raise_for_status()   
         data=meta_response.json()
         
         img_url=data["url"]

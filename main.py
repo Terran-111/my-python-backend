@@ -22,10 +22,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"message": "Python后端(高并发旗舰版)正在运行！"}
-
 # --- 独立的图片处理函数 (不要加 async) ---
 # 这个函数负责 CPU 密集型工作：压缩图片
 def process_image_sync(img_content):
@@ -37,12 +33,16 @@ def process_image_sync(img_content):
             image = image.convert("RGB")
             
         buffer = BytesIO()
-        image.save(buffer, format="JPEG", quality=90) # 压缩质量
+        image.save(buffer, format="JPEG", quality=85) # 压缩质量
         img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
         return img_str
     except Exception as e:
         print(f"图片处理出错: {e}")
         return None
+
+@app.get("/")
+def read_root():
+    return {"message": "Python后端(异步+记忆版)正在运行！"}
 
 # ==========================================
 #  接口 1: 抓猫 (高并发异步版)
@@ -50,14 +50,13 @@ def process_image_sync(img_content):
 @app.get("/cat")
 async def get_cat():
     print("收到并发请求 -> 开始异步抓猫")
-    
+    # 伪装浏览器头，防止被反爬
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
     try:
-        # 1. 【异步】非阻塞下载数据
-        # 设置 10秒超时，避免 Vercel 强行杀掉进程
+        # 使用 async with 自动管理连接开关
         async with httpx.AsyncClient(headers=headers, verify=False, timeout=10.0) as client:
             
             # A. 获取 JSON
@@ -88,55 +87,70 @@ async def get_cat():
         if not img_str:
             raise Exception("图片压缩失败")
 
-        # 3. 构造返回数据
-        content = {
-            "image": f"data:image/jpeg;base64,{img_str}",
-            "note": "这是由 Python 高并发异步版抓回来的猫！"
-        }
+        # # 3. 构造返回数据
+        # content = {
+        #     "image": f"data:image/jpeg;base64,{img_str}",
+        #     "note": "这是由 Python 异步高并发抓回来的新喵喵！"
+        # }
         
-        # 4. 手动硬塞 CORS 头，防止浏览器拦截
-        response = JSONResponse(content=content)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        return response
+        # # 4. 手动硬塞 CORS 头，防止浏览器拦截
+        # response = JSONResponse(content=content)
+        # response.headers["Access-Control-Allow-Origin"] = "*"
+        # return response
+        return {
+            "image": f"data:image/jpeg;base64,{img_str}",
+            "note": "这是由 Python 异步高并发抓回来的新喵喵！"
+        }
 
     except Exception as e:
+        # print(f"抓猫报错: {e}")
+        # # 出错也要返回 JSON，并且带上 CORS 头，不然前端看不到报错信息
+        # error_content = {
+        #     "image": "",
+        #     "note": f"抓猫失败: {str(e)}"
+        # }
+        # response = JSONResponse(content=error_content)
+        # response.headers["Access-Control-Allow-Origin"] = "*"
+        # return response
         print(f"抓猫报错: {e}")
-        # 出错也要返回 JSON，并且带上 CORS 头，不然前端看不到报错信息
-        error_content = {
+        return {
             "image": "",
             "note": f"抓猫失败: {str(e)}"
         }
-        response = JSONResponse(content=error_content)
-        response.headers["Access-Control-Allow-Origin"] = "*"
-        return response
 
 
 # ==========================================
 #  接口 2: AI 聊天 (保持异步)
 # ==========================================
 class ChatRequest(BaseModel):
-    message: str
+    history:list
 
 api_key = os.getenv("SILICON_KEY", None)
 
 @app.post("/chat")
 async def chat_with_ai(req: ChatRequest):
     if not api_key:
-        return {"reply": "错误：没有配置 API Key"}
-
+        def error_gen(): yield "API Key 未设置，请检查环境变量 SILICON_KEY"
+        return StreamingResponse(error_gen(), media_type="text/plain")
+       
     client = AsyncOpenAI(
         api_key=api_key,
         base_url="https://api.siliconflow.cn/v1"
     )
 
     async def generate():
-        try:
+        try: 
+            # 构造完整对话历史
+            messages_to_send = [
+                {"role": "system", "content": "你是一个傲娇又可爱的猫娘助手，每一句话结尾都要带'喵~'。你喜欢吃鱼，讨厌洗澡。"}
+            ]
+            # 再把前端发过来的历史记录接上去
+            # 前端发来的格式是 [{"role": "user", "content": "..."}, ...]
+            messages_to_send.extend(req.history)
+            
             response = await client.chat.completions.create(
                 model="deepseek-ai/DeepSeek-V3",
-                messages=[
-                    {"role": "system", "content": "你是一个风趣的猫娘助手，说话结尾喜欢带'喵'。"},
-                    {"role": "user", "content": req.message}
-                ],
+                messages=messages_to_send,
                 temperature=0.7,
                 stream=True
             )

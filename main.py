@@ -31,13 +31,13 @@ def read_root():
 def process_image_sync(img_content):
     try:
         image = Image.open(BytesIO(img_content))
-        image.thumbnail((600, 600)) # 缩小尺寸
+        image.thumbnail((1080, 1080)) # 缩小尺寸
         
         if image.mode in ("RGBA", "P"):
             image = image.convert("RGB")
             
         buffer = BytesIO()
-        image.save(buffer, format="JPEG", quality=60) # 压缩质量
+        image.save(buffer, format="JPEG", quality=90) # 压缩质量
         img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
         return img_str
     except Exception as e:

@@ -79,7 +79,12 @@ async def get_cat(): # 注意这里变成了 async def
             async with session.get("https://cataas.com/cat?json=true", timeout=10) as resp:
                 resp.raise_for_status()
                 data = await resp.json()
-                img_url = data["url"]
+                img_url = data.get("url")
+                # 【核心修复】如果 API 返回的是相对路径（例如 /cat/xxx），我们需要加上域名
+                if img_url and not img_url.startswith("http"):
+                    img_url = f"https://cataas.com{img_url}"
+                
+                print(f"解析到的图片地址: {img_url}") # 打印出来方便调试
 
             # 2. 异步下载图片二进制数据
             async with session.get(img_url, timeout=10) as img_resp:

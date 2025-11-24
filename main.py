@@ -1,42 +1,129 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Response # 引入 Response 对象手动控制
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool # 【关键】用于把脏活累活扔给线程池
+from pydantic import BaseModel
 import uvicorn
-import aiohttp  # 1. 引入异步请求库 aiohttp
-import asyncio  # 引入 asyncio
-import base64
+import os
+import httpx # 请确保 requirements.txt 里有 httpx
+import asyncio
+from openai import AsyncOpenAI
 from io import BytesIO
 from PIL import Image
-from pydantic import BaseModel
-import os
-from openai import AsyncOpenAI  # 2. 引入异步的 OpenAI 客户端
-from fastapi.responses import StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
+import base64
 
 app = FastAPI()
 
+# CORS 配置
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 @app.get("/")
 def read_root():
-    return {"message": "Python后端(AI版 - 异步高性能模式)正在运行中！"}
+    return {"message": "Python后端(高并发旗舰版)正在运行！"}
 
-# --- 初始化 AI 客户端 ---
-api_key = os.getenv("SILICON_KEY", None)
+# --- 独立的图片处理函数 (不要加 async) ---
+# 这个函数负责 CPU 密集型工作：压缩图片
+def process_image_sync(img_content):
+    try:
+        image = Image.open(BytesIO(img_content))
+        image.thumbnail((600, 600)) # 缩小尺寸
+        
+        if image.mode in ("RGBA", "P"):
+            image = image.convert("RGB")
+            
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=60) # 压缩质量
+        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return img_str
+    except Exception as e:
+        print(f"图片处理出错: {e}")
+        return None
 
+# ==========================================
+#  接口 1: 抓猫 (高并发异步版)
+# ==========================================
+@app.get("/cat")
+async def get_cat():
+    print("收到并发请求 -> 开始异步抓猫")
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    try:
+        # 1. 【异步】非阻塞下载数据
+        # 设置 10秒超时，避免 Vercel 强行杀掉进程
+        async with httpx.AsyncClient(headers=headers, verify=False, timeout=10.0) as client:
+            
+            # A. 获取 JSON
+            resp = await client.get("https://cataas.com/cat?json=true")
+            if resp.status_code != 200:
+                raise Exception(f"API报错: {resp.status_code}")
+                
+            data = resp.json()
+            img_url = data.get("url")
+            
+            # URL 修复
+            if img_url and not img_url.startswith("http"):
+                img_url = f"https://cataas.com{img_url}"
+            
+            print(f"解析地址: {img_url}")
+
+            # B. 下载图片二进制流
+            img_resp = await client.get(img_url)
+            if img_resp.status_code != 200:
+                raise Exception("图片下载失败")
+            
+            img_content = img_resp.content
+
+        # 2. 【关键一步】将 CPU 密集的图片压缩任务放入线程池
+        # 这样即使图片处理慢，也不会卡住其他用户的请求！
+        img_str = await run_in_threadpool(process_image_sync, img_content)
+        
+        if not img_str:
+            raise Exception("图片压缩失败")
+
+        # 3. 构造返回数据
+        content = {
+            "image": f"data:image/jpeg;base64,{img_str}",
+            "note": "这是由 Python 高并发异步版抓回来的猫！"
+        }
+        
+        # 4. 手动硬塞 CORS 头，防止浏览器拦截
+        response = JSONResponse(content=content)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
+    except Exception as e:
+        print(f"抓猫报错: {e}")
+        # 出错也要返回 JSON，并且带上 CORS 头，不然前端看不到报错信息
+        error_content = {
+            "image": "",
+            "note": f"抓猫失败: {str(e)}"
+        }
+        response = JSONResponse(content=error_content)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
+
+# ==========================================
+#  接口 2: AI 聊天 (保持异步)
+# ==========================================
 class ChatRequest(BaseModel):
     message: str
 
-# --- 3. 异步 AI 聊天接口优化 ---
+api_key = os.getenv("SILICON_KEY", None)
+
 @app.post("/chat")
 async def chat_with_ai(req: ChatRequest):
     if not api_key:
-        return {"reply": "错误：后端没有配置API KEY"}
+        return {"reply": "错误：没有配置 API Key"}
 
-    # 使用 AsyncOpenAI 而不是 OpenAI
     client = AsyncOpenAI(
         api_key=api_key,
         base_url="https://api.siliconflow.cn/v1"
@@ -44,7 +131,6 @@ async def chat_with_ai(req: ChatRequest):
 
     async def generate():
         try:
-            # 这里加上了 await，且 create 方法是异步的
             response = await client.chat.completions.create(
                 model="deepseek-ai/DeepSeek-V3",
                 messages=[
@@ -54,66 +140,13 @@ async def chat_with_ai(req: ChatRequest):
                 temperature=0.7,
                 stream=True
             )
-            
-            # 异步循环读取流
             async for chunk in response:
                 if chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
-                    
         except Exception as e:
-            yield f'出错了喵：{str(e)}'
+            yield f"AI 出错啦: {str(e)}"
 
     return StreamingResponse(generate(), media_type="text/plain")
-
-
-# --- 4. 异步抓猫接口优化 ---
-@app.get("/cat")
-async def get_cat(): # 注意这里变成了 async def
-    print("收到 Vue 的请求了！正在去帮它找猫...")
-
-    try:
-        # 创建一个异步的 session
-        async with aiohttp.ClientSession() as session:
-            # 1. 异步下载 JSON 数据
-            # 这里的 await 意味着：在等网络响应时，CPU可以去处理别人的请求
-            async with session.get("https://cataas.com/cat?json=true", timeout=10) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                img_url = data.get("url")
-                # 【核心修复】如果 API 返回的是相对路径（例如 /cat/xxx），我们需要加上域名
-                if img_url and not img_url.startswith("http"):
-                    img_url = f"https://cataas.com{img_url}"
-                
-                print(f"解析到的图片地址: {img_url}") # 打印出来方便调试
-
-            # 2. 异步下载图片二进制数据
-            async with session.get(img_url, timeout=10) as img_resp:
-                img_content = await img_resp.read() # 获取二进制内容
-
-        # 3. 图片压缩处理 (Pillow 处理是 CPU 密集型，通常很快，可以直接写在这里)
-        # 如果图片处理非常慢，需要放到 run_in_executor 线程池中，但一般抓猫图不需要
-        image = Image.open(BytesIO(img_content))
-        image.thumbnail((600, 600))
-
-        if image.mode in ("RGBA", "P"):
-            image = image.convert("RGB")
-
-        buffer = BytesIO()
-        image.save(buffer, format="JPEG", quality=60)
-        
-        img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
-
-        return {
-            "image": f"data:image/jpeg;base64,{img_str}",
-            "note": "这是由Python后端代理获取的新猫猫（异步加速版）"
-        }
-
-    except Exception as e:
-        print("抓猫失败:", e)
-        return {
-            "image": "",
-            "note": f"抓猫失败了，原因: {str(e)}"
-        }
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

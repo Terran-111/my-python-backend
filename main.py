@@ -1,126 +1,114 @@
 from fastapi import FastAPI
 import uvicorn
-import requests 
-
+import aiohttp  # 1. 引入异步请求库 aiohttp
+import asyncio  # 引入 asyncio
 import base64
-from io import BytesIO # 内存处理工具
-from PIL import Image  # 图片处理工具
-
-from pydantic import BaseModel # 用来定义接收的数据格式
+from io import BytesIO
+from PIL import Image
+from pydantic import BaseModel
 import os
-from openai import OpenAI
-from fastapi.responses import StreamingResponse # 引入流式响应
+from openai import AsyncOpenAI  # 2. 引入异步的 OpenAI 客户端
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 
-# 1. 创建一个 App 实例
 app = FastAPI()
 
-# 允许跨域的代码（为了让Vue能访问Python后端）
-from fastapi.middleware.cors import CORSMiddleware #  导入FastAPI中的CORS中间件
-app.add_middleware( #  为FastAPI应用添加CORS中间件配置
-    CORSMiddleware, #  指定使用CORSMiddleware中间件
-    allow_origins=["*"], #  允许所有来源的跨域请求
-    allow_methods=["*"], #  允许所有HTTP方法
-    allow_headers=["*"] #  允许所有请求头
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"]
 )
 
-# 2. 定义一个接口 (API)
-# 当别人访问根目录 "/" 时，执行下面的函数
 @app.get("/")
 def read_root():
-    return {"message": "Python后端(AI版)正在运行中！"}
+    return {"message": "Python后端(AI版 - 异步高性能模式)正在运行中！"}
 
 # --- 初始化 AI 客户端 ---
-# 从环境变量里读取 Key，如果在本地运行没有 Key，就设为 None
 api_key = os.getenv("SILICON_KEY", None)
 
-# 定义一个请求体结构，前端发来的数据必须包含 message
 class ChatRequest(BaseModel):
-    message:str
+    message: str
 
-# --- 新增AI聊天接口 ---
+# --- 3. 异步 AI 聊天接口优化 ---
 @app.post("/chat")
 async def chat_with_ai(req: ChatRequest):
-        if not api_key:
-            return {
-                "reply": "错误：后端没有配置API KEY，请在 Vercel 环境变量里添加 SILICON_KEY"
-            }
-        async def generate():
-                try:
-                    client = OpenAI(
-                        api_key=api_key,
-                        base_url="https://api.siliconflow.cn/v1"
-                    )
+    if not api_key:
+        return {"reply": "错误：后端没有配置API KEY"}
 
-                    # 开启 stream=True
-                    response = client.chat.completions.create(
-                        model="deepseek-ai/DeepSeek-V3",
-                        messages=[
-                            {"role": "system", "content": "你是一个风趣的猫娘助手，说话结尾喜欢带'喵'。"},
-                            {"role": "user", "content": req.message}
-                        ],
-                        temperature=0.7,
-                        stream=True # 关键开关
-                    )
-                    for chunk in response:
-                        if chunk.choices[0].delta.content:
-                            yield chunk.choices[0].delta.content
-                        
-                except Exception as e:
-                    yield f'出错了喵：{str(e)}'
-                
-        return StreamingResponse(generate(), media_type="text/plain")
+    # 使用 AsyncOpenAI 而不是 OpenAI
+    client = AsyncOpenAI(
+        api_key=api_key,
+        base_url="https://api.siliconflow.cn/v1"
+    )
 
-# --- 原有的抓猫接口保持不变 ---
+    async def generate():
+        try:
+            # 这里加上了 await，且 create 方法是异步的
+            response = await client.chat.completions.create(
+                model="deepseek-ai/DeepSeek-V3",
+                messages=[
+                    {"role": "system", "content": "你是一个风趣的猫娘助手，说话结尾喜欢带'喵'。"},
+                    {"role": "user", "content": req.message}
+                ],
+                temperature=0.7,
+                stream=True
+            )
+            
+            # 异步循环读取流
+            async for chunk in response:
+                if chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                    
+        except Exception as e:
+            yield f'出错了喵：{str(e)}'
+
+    return StreamingResponse(generate(), media_type="text/plain")
+
+
+# --- 4. 异步抓猫接口优化 ---
 @app.get("/cat")
-def get_cat():
+async def get_cat(): # 注意这里变成了 async def
     print("收到 Vue 的请求了！正在去帮它找猫...")
 
     try:
-        # 发送请求时，带上 proxies 参数
-        # timeout=10 意思是如果 10 秒还没连上，就放弃，别死等
-        # 1.下载原图
-        meta_response = requests.get("https://cataas.com/cat?json=true",timeout=10)
-        meta_response.raise_for_status()   
-        data=meta_response.json()
-        
-        img_url=data["url"]
-        
-        # 2. 【关键】Python 亲自把图片下载到内存里
-        img_response = requests.get(img_url,timeout=10)
-        
-        # 3. 【核心优化】使用 Pillow 进行压缩
-        # 打开图片
-        image = Image.open(BytesIO(img_response.content))
-        
-        # A. 缩小尺寸：手机看图不需要太大，限制最大宽/高为 600px
+        # 创建一个异步的 session
+        async with aiohttp.ClientSession() as session:
+            # 1. 异步下载 JSON 数据
+            # 这里的 await 意味着：在等网络响应时，CPU可以去处理别人的请求
+            async with session.get("https://cataas.com/cat?json=true", timeout=10) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                img_url = data["url"]
+
+            # 2. 异步下载图片二进制数据
+            async with session.get(img_url, timeout=10) as img_resp:
+                img_content = await img_resp.read() # 获取二进制内容
+
+        # 3. 图片压缩处理 (Pillow 处理是 CPU 密集型，通常很快，可以直接写在这里)
+        # 如果图片处理非常慢，需要放到 run_in_executor 线程池中，但一般抓猫图不需要
+        image = Image.open(BytesIO(img_content))
         image.thumbnail((600, 600))
-        
-        # B. 格式统一：转为 JPEG (体积比 PNG 小很多)
+
         if image.mode in ("RGBA", "P"):
             image = image.convert("RGB")
-            
-        # C. 降低质量：quality=60 (肉眼看不出区别，体积减半)
+
         buffer = BytesIO()
         image.save(buffer, format="JPEG", quality=60)
         
-        # 4. 转 Base64 字符串
         img_str = base64.b64encode(buffer.getvalue()).decode('utf-8')
-        
+
         return {
-        "image":f"data:image/jpeg;base64,{img_str}",
-        "note":"这是由Python后端代理获取的新猫猫（Vercel直连压缩版）"
+            "image": f"data:image/jpeg;base64,{img_str}",
+            "note": "这是由Python后端代理获取的新猫猫（异步加速版）"
         }
+
     except Exception as e:
         print("抓猫失败:", e)
         return {
-            "image": "", # 返回空图片
-            "note": f"抓猫失败了，原因: {str(e)}" 
+            "image": "",
+            "note": f"抓猫失败了，原因: {str(e)}"
         }
 
-# 4. 让代码可以直接运行
 if __name__ == "__main__":
-    # main:app 模块名：应用实例名
-    # host="0.0.0.0" 代表允许任何设备访问
-    # port=8000 是后端常用的端口
-    # reload=True 代表改了代码自动重启，不用手动关了再开
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

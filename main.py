@@ -144,7 +144,12 @@ async def chat_with_ai(req: ChatRequest):
     if not api_key:
         def error_gen(): yield "API Key 未设置，请检查环境变量 SILICON_KEY"
         return StreamingResponse(error_gen(), media_type="text/plain")
-       
+    
+    if not supabase:
+        def error_gen():
+            yield "数据库未连接，无法保存对话记录"
+        return StreamingResponse(error_gen(), media_type="text/plain")
+    
     client = AsyncOpenAI(
         api_key=api_key,
         base_url="https://api.siliconflow.cn/v1"
@@ -155,10 +160,13 @@ async def chat_with_ai(req: ChatRequest):
     if req.history:
         last_msg = req.history[-1]
         if last_msg['role'] == 'user':
-            # 扔进线程池，不阻塞主流程
-            await run_in_threadpool(save_to_db_sync, "user", last_msg['content'])
-
+            try:
+                await run_in_threadpool(save_to_db_sync, "user", last_msg['content'])
+            except Exception as e:
+                print(f"保存用户消息失败: {e}")
+                
     async def generate():
+        full_reply = "" 
         try: 
             # 构造完整对话历史
             messages_to_send = [
@@ -182,7 +190,11 @@ async def chat_with_ai(req: ChatRequest):
                     
             # 【关键】AI 回复完毕，异步保存到数据库
             # 同样扔进线程池，不影响最后一个字的传输
-            await run_in_threadpool(save_to_db_sync, "assistant", full_reply)
+            if full_reply:  # 确保有内容才保存
+                try:
+                    await run_in_threadpool(save_to_db_sync, "assistant", full_reply)
+                except Exception as e:
+                    print(f"保存AI回复失败: {e}")
             
         except Exception as e:
             yield f"AI 出错啦: {str(e)}"

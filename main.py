@@ -149,6 +149,14 @@ async def chat_with_ai(req: ChatRequest):
         api_key=api_key,
         base_url="https://api.siliconflow.cn/v1"
     )
+    
+    # 【关键】异步保存用户消息
+    # 取前端发来的最后一条（即用户刚说的话）
+    if req.history:
+        last_msg = req.history[-1]
+        if last_msg['role'] == 'user':
+            # 扔进线程池，不阻塞主流程
+            await run_in_threadpool(save_to_db_sync, "user", last_msg['content'])
 
     async def generate():
         try: 
@@ -168,7 +176,14 @@ async def chat_with_ai(req: ChatRequest):
             )
             async for chunk in response:
                 if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+                    content = chunk.choices[0].delta.content
+                    full_reply += content # 收集完整回复
+                    yield content
+                    
+            # 【关键】AI 回复完毕，异步保存到数据库
+            # 同样扔进线程池，不影响最后一个字的传输
+            await run_in_threadpool(save_to_db_sync, "assistant", full_reply)
+            
         except Exception as e:
             yield f"AI 出错啦: {str(e)}"
 

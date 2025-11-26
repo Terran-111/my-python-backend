@@ -11,6 +11,10 @@ from openai import AsyncOpenAI
 from io import BytesIO
 from PIL import Image
 import base64
+from dotenv import load_dotenv
+from supabase import create_client, Client # 引入 Supabase
+
+load_dotenv()
 
 app = FastAPI()
 
@@ -21,6 +25,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- 1. 初始化 Supabase 数据库 ---
+supabase_url = os.environ.get("SUPABASE_URL")
+supabase_key = os.environ.get("SUPABASE_KEY")
+# 如果环境变量没配好，supabase 就是 None，防止报错崩溃
+try:
+    supabase: Client = create_client(supabase_url, supabase_key)
+except:
+    supabase = None
+    print("⚠️ 警告：Supabase 连接失败，请检查 Vercel 环境变量")
+
+# --- 2. 定义存数据的函数 (扔给线程池用) ---
+def save_to_db_sync(role, content):
+    if supabase:
+        try:
+            # 往 messages 表里插入数据
+            supabase.table("messages").insert({"role": role, "content": content}).execute()
+        except Exception as e:
+            print(f"数据库保存失败: {e}")
 
 # --- 独立的图片处理函数 (不要加 async) ---
 # 这个函数负责 CPU 密集型工作：压缩图片
@@ -44,9 +67,20 @@ def process_image_sync(img_content):
 def read_root():
     return {"message": "Python后端(异步+记忆版)正在运行！"}
 
-# ==========================================
-#  接口 1: 抓猫 (高并发异步版)
-# ==========================================
+# --- 3. 新增接口：获取历史记录 ---
+# 前端页面加载时调用这个，把以前聊的天加载出来
+@app.get("/history")
+def get_history():
+    if not supabase:
+        return {"history": []}
+    try:
+        # 从数据库查最新的 20 条记录，按时间正序排列
+        response = supabase.table("messages").select("*").order("created_at", desc=False).limit(50).execute()
+        return {"history": response.data}
+    except Exception as e:
+        print("获取历史失败:", e)
+        return {"history": []}
+
 @app.get("/cat")
 async def get_cat():
     print("收到并发请求 -> 开始异步抓猫")
@@ -88,40 +122,18 @@ async def get_cat():
             raise Exception("图片压缩失败")
 
         # # 3. 构造返回数据
-        # content = {
-        #     "image": f"data:image/jpeg;base64,{img_str}",
-        #     "note": "这是由 Python 异步高并发抓回来的新喵喵！"
-        # }
-        
-        # # 4. 手动硬塞 CORS 头，防止浏览器拦截
-        # response = JSONResponse(content=content)
-        # response.headers["Access-Control-Allow-Origin"] = "*"
-        # return response
         return {
             "image": f"data:image/jpeg;base64,{img_str}",
             "note": "这是由 Python 异步高并发抓回来的新喵喵！"
         }
 
     except Exception as e:
-        # print(f"抓猫报错: {e}")
-        # # 出错也要返回 JSON，并且带上 CORS 头，不然前端看不到报错信息
-        # error_content = {
-        #     "image": "",
-        #     "note": f"抓猫失败: {str(e)}"
-        # }
-        # response = JSONResponse(content=error_content)
-        # response.headers["Access-Control-Allow-Origin"] = "*"
-        # return response
         print(f"抓猫报错: {e}")
         return {
             "image": "",
             "note": f"抓猫失败: {str(e)}"
         }
 
-
-# ==========================================
-#  接口 2: AI 聊天 (保持异步)
-# ==========================================
 class ChatRequest(BaseModel):
     history:list
 

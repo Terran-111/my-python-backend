@@ -37,11 +37,15 @@ except:
     print("⚠️ 警告：Supabase 连接失败，请检查 Vercel 环境变量")
 
 # --- 2. 定义存数据的函数 (扔给线程池用) ---
-def save_to_db_sync(role, content):
+def save_to_db_sync(role: str, content: str, session_id: str):
     if supabase:
         try:
             # 往 messages 表里插入数据
-            supabase.table("messages").insert({"role": role, "content": content}).execute()
+            supabase.table("messages").insert({
+            "role": role, 
+            "content": content,
+            "session_id": session_id # 👈 存入 ID
+        }).execute()
         except Exception as e:
             print(f"数据库保存失败: {e}")
 
@@ -70,13 +74,18 @@ def read_root():
 # --- 3. 新增接口：获取历史记录 ---
 # 前端页面加载时调用这个，把以前聊的天加载出来
 @app.get("/history")
-def get_history():
+def get_history(session_id: str = "default"):
     if not supabase:
         return {"history": []}
     try:
-        # 从数据库查最新的 20 条记录，按时间正序排列
-        response = supabase.table("messages").select("*").order("created_at", desc=False).limit(50).execute()
-        return {"history": response.data}
+        # 🚀 关键：只查 session_id 等于当前用户的记录
+        res = supabase.table("messages")\
+            .select("*")\
+            .eq("session_id", session_id)\
+            .order("created_at", desc=False)\
+            .limit(50)\
+            .execute()
+        return {"history": res.data}
     except Exception as e:
         print("获取历史失败:", e)
         return {"history": []}
@@ -136,6 +145,7 @@ async def get_cat():
 
 class ChatRequest(BaseModel):
     history:list
+    session_id: str = "default" # 默认为 default，防止报错
 
 api_key = os.getenv("SILICON_KEY", None)
 
@@ -188,11 +198,11 @@ async def chat_with_ai(req: ChatRequest):
                     full_reply += content # 收集完整回复
                     yield content
                     
-            # 【关键】AI 回复完毕，异步保存到数据库
+            # 【关键】AI 回复完毕，异步保存到数据库（带ID）
             # 同样扔进线程池，不影响最后一个字的传输
             if full_reply:  # 确保有内容才保存
                 try:
-                    await run_in_threadpool(save_to_db_sync, "assistant", full_reply)
+                    await run_in_threadpool(save_to_db_sync, "assistant", full_reply,req.session_id)
                 except Exception as e:
                     print(f"保存AI回复失败: {e}")
             

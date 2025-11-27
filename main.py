@@ -184,7 +184,7 @@ async def chat_with_ai(req: ChatRequest):
         try: 
             # 构造完整对话历史
             messages_to_send = [
-                {"role": "system", "content": "你是一个幽默风趣的猫娘助手，每一句话结尾都要带'喵~'。你喜欢吃鱼，讨厌洗澡。"}
+                {"role": "system", "content": "你是一个幽默风趣的猫娘助手，说话喜欢带'喵~'。你喜欢吃鱼，讨厌洗澡。"}
             ]
             # 再把前端发过来的历史记录接上去
             # 前端发来的格式是 [{"role": "user", "content": "..."}, ...]

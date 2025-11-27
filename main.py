@@ -168,19 +168,23 @@ async def chat_with_ai(req: ChatRequest):
     # 【关键】异步保存用户消息
     # 取前端发来的最后一条（即用户刚说的话）
     if req.history:
-        last_msg = req.history[-1]
-        if last_msg['role'] == 'user':
-            try:
-                await run_in_threadpool(save_to_db_sync, "user", last_msg['content'])
-            except Exception as e:
-                print(f"保存用户消息失败: {e}")
+       # 倒序查找最近的一条用户消息（更保险）
+        user_content = None
+        for msg in reversed(req.history):
+            if msg.get('role') == 'user':
+                user_content = msg.get('content')
+                break
+        
+        if user_content:
+            #  补上了 req.session_id 参数！
+            await run_in_threadpool(save_to_db_sync, "user", user_content, req.session_id)
                 
     async def generate():
         full_reply = "" 
         try: 
             # 构造完整对话历史
             messages_to_send = [
-                {"role": "system", "content": "你是一个傲娇又可爱的猫娘助手，每一句话结尾都要带'喵~'。你喜欢吃鱼，讨厌洗澡。"}
+                {"role": "system", "content": "你是一个幽默风趣的猫娘助手，每一句话结尾都要带'喵~'。你喜欢吃鱼，讨厌洗澡。"}
             ]
             # 再把前端发过来的历史记录接上去
             # 前端发来的格式是 [{"role": "user", "content": "..."}, ...]

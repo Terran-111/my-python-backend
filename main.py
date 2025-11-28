@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Response # 引入 Response 对象手动控制
+from fastapi import FastAPI, Response,UploadFile, File, HTTPException # 引入 Response 对象手动控制
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool # 【关键】用于把脏活累活扔给线程池
@@ -7,12 +7,13 @@ import uvicorn
 import os
 import httpx # 请确保 requirements.txt 里有 httpx
 import asyncio
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI,OpenAI 
 from io import BytesIO
 from PIL import Image
 import base64
 from dotenv import load_dotenv
 from supabase import create_client, Client # 引入 Supabase
+from pypdf import PdfReader # NEW: 读取PDF
 
 load_dotenv()
 
@@ -66,10 +67,24 @@ def process_image_sync(img_content):
     except Exception as e:
         print(f"图片处理出错: {e}")
         return None
+    
+# 获取向量（同步版，用于上传时）
+def get_embedding(text):
+    if not api_key: return None
+    client = OpenAI(api_key=api_key, base_url="https://api.siliconflow.cn/v1")
+    try:
+        response = client.embeddings.create(
+            model="BAAI/bge-m3", 
+            input=text
+        )
+        return response.data[0].embedding
+    except Exception as e:
+        print(f"向量化失败: {e}")
+        return None
 
 @app.get("/")
 def read_root():
-    return {"message": "Python后端(异步+记忆版)正在运行！"}
+    return {"message": "Python后端(RAG知识库版)正在运行！"}
 
 # --- 3. 新增接口：获取历史记录 ---
 # 前端页面加载时调用这个，把以前聊的天加载出来
@@ -142,6 +157,54 @@ async def get_cat():
             "image": "",
             "note": f"抓猫失败: {str(e)}"
         }
+        
+# --- 4. 核心：PDF 上传与学习接口 ---
+@app.post("/upload")
+async def upload_pdf(file: UploadFile = File(...)):
+    if not api_key or not supabase:
+        return {"message": "配置缺失，无法学习"}
+        
+    print(f"收到文件: {file.filename}")
+    
+    try:
+        # A. 读取 PDF 内容
+        content = await file.read()
+        # 将二进制数据交给 PdfReader
+        pdf_reader = PdfReader(BytesIO(content))
+        full_text = ""
+        for page in pdf_reader.pages:
+            full_text += page.extract_text() or ""
+        
+        # B. 文本切片 (每 500 字一块)
+        chunk_size = 500
+        chunks = [full_text[i:i+chunk_size] for i in range(0, len(full_text), chunk_size)]
+        
+        print(f"提取成功，共 {len(full_text)} 字，切分为 {len(chunks)} 块")
+
+        # C. 存入数据库 (定义一个内部函数扔进线程池)
+        def process_and_save():
+            count = 0
+            for chunk in chunks:
+                vector = get_embedding(chunk)
+                if vector:
+                    supabase.table("knowledge").insert({
+                        "content": chunk,
+                        "embedding": vector
+                    }).execute()
+                    count += 1
+            return count
+
+        # 这是一个耗时操作，必须异步执行
+        saved_count = await run_in_threadpool(process_and_save)
+        
+        return {
+            "message": "学习完成！", 
+            "filename": file.filename, 
+            "chunks_saved": saved_count
+        }
+    except Exception as e:
+        print(f"上传处理失败: {e}")
+        return {"message": f"处理失败: {str(e)}"}
 
 class ChatRequest(BaseModel):
     history:list
